@@ -1,0 +1,102 @@
+name: RDP-DELUXE-FINAL
+on:
+  workflow_dispatch:
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - name: Configure Core RDP Settings
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
+
+      - name: Create RDP User
+        run: |
+          $password = "admin@123"
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          if (-not (Get-LocalUser -Name "DELUXE" -ErrorAction SilentlyContinue)) {
+              New-LocalUser -Name "DELUXE" -Password $securePass -AccountNeverExpires
+          }
+          Add-LocalGroupMember -Group "Administrators" -Member "DELUXE"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "DELUXE"
+
+      - name: Install Apps (Telegram & Discord) & Setup Links
+        run: |
+          # 1. إنشاء ملف الـ TXT على سطح المكتب بالروابط المطلوبة
+          $linksContent = @"
+          ========================================
+          سيرفر DELUXE - روابط التحميل والملفات
+          ========================================
+          1. رابط درايف أفتر إفكتس: https://drive.google.com/drive/folders/1cTfQix21Dhnyo3hXxT6yuuQDKlPz8I1_?usp=sharing
+          2. رابط درايف البلوقنات: https://drive.google.com/drive/folders/1cQsWFwCW6Bw43O4KGyi0ycc5BWrM8wi2
+          3. رابط درايف ميديا إنكودر: https://drive.google.com/file/d/1DCdrDAAqMs2A-qcUeUFGCQtVLz-8LjsR/view
+          "@
+          Set-Content -Path "C:\Users\Public\Desktop\Links.txt" -Value $linksContent
+
+          # 2. تحميل وتثبيت تيليجرام صامتاً
+          try {
+              $tgPath = "$env:TEMP\tsetup.exe"
+              (New-Object System.Net.WebClient).DownloadFile("https://telegram.org/dl/desktop/win64", $tgPath)
+              Start-Process $tgPath -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
+          } catch {}
+
+          # 3. تحميل وتثبيت ديسكورد صامتاً
+          try {
+              $dcPath = "$env:TEMP\DiscordSetup.exe"
+              (New-Object System.Net.WebClient).DownloadFile("https://discord.com/api/downloads/distributions/app/installers/latest?platform=win&channel=stable", $dcPath)
+              Start-Process $dcPath -ArgumentList "/s" -Wait
+          } catch {}
+
+          # 4. تثبيت الخلفية
+          $imgUrl = "https://c4.wallpaperflare.com/wallpaper/448/547/639/chains-metal-dark-background-wallpaper-preview.jpg"
+          $imgPath = "C:\Users\Public\wallpaper.jpg"
+          try {
+              (New-Object System.Net.WebClient).DownloadFile($imgUrl, $imgPath)
+              $code = '[DllImport("user32.dll")] public static extern int SystemParametersInfo(int u, int p, string s, int f);'
+              Add-Type -MemberDefinition $code -Name Win -Namespace Win32
+              [Win32.Win]::SystemParametersInfo(20, 0, $imgPath, 3)
+          } catch {}
+
+      - name: Install Tailscale Fast
+        run: |
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "$env:TEMP\tailscale.msi"
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$env:TEMP\tailscale.msi`"", "/quiet", "/norestart" -Wait
+
+      - name: Launch, Notify & Backup Engine
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-rocket
+          
+          $taip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          Write-Host "========================================"
+          Write-Host "RDP IP Address: $taip" -ForegroundColor Green
+          Write-Host "Username: DELUXE"
+          Write-Host "Password: admin@123"
+          Write-Host "========================================"
+          
+          $token = "8876285789:AAEOl5YXvoj1wM-1z309OS0qhkhJiFYCmT8"
+          $chatId = "8979929694"
+          
+          $msg = "🚀 تم تشغيل سيرفر DELUXE بنجاح!%0A🌐 IP: $taip%0A👤 User: DELUXE%0A🔑 Pass: admin@123"
+          Invoke-RestMethod -Uri "https://api.telegram.org/bot$token/sendMessage?chat_id=$chatId&text=$msg"
+          
+          Start-Sleep -Seconds 21000
+          
+          $backupDir = "C:\Users\Public\BackupFiles"
+          New-Item -ItemType Directory -Path $backupDir -Force
+          
+          Copy-Item -Path "C:\Users\Public\Desktop\*" -Destination $backupDir -Recurse -Force -ErrorAction SilentlyContinue
+          Copy-Item -Path "C:\Users\Public\Downloads\*" -Destination $backupDir -Recurse -Force -ErrorAction SilentlyContinue
+          
+          Get-ChildItem -Path "C:\" -Include *.aep,*encoder* -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+              Copy-Item -Path $_.FullName -Destination $backupDir -Force -ErrorAction SilentlyContinue
+          }
+          
+          $zip = "C:\Users\Public\Backup.zip"
+          Compress-Archive -Path "$backupDir\*" -DestinationPath $zip -Force
+          
+          $url = "https://api.telegram.org/bot$token/sendDocument"
+          Invoke-RestMethod -Method Post -Uri $url -Form @{chat_id=$chatId; document=(Get-Item $zip)}
